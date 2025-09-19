@@ -1,8 +1,8 @@
 {
   "name": "berlin-rental-watcher",
-  "version": "3.2.0",
+  "version": "3.3.0",
   "private": true,
-  "description": "Watcher mit Ergebnisliste, 30s Polling und E-Mail-Benachrichtigungen. Provider: Vonovia, Gewobag, DEGEWO, Deutsche Wohnen, STADT UND LAND, Berlinovo + Google-Fallback.",
+  "description": "Watcher mit Ergebnisliste, 30s Polling und E-Mail-Benachrichtigungen. Provider: Vonovia, Gewobag, DEGEWO, Deutsche Wohnen, STADT UND LAND, Berlinovo + Google-Fallback. Server erzwingt Filter: Zimmer, Fläche, Preis, Bezirk.",
   "main": "server.js",
   "type": "module",
   "scripts": {
