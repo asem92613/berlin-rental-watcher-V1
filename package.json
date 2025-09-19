@@ -2,20 +2,18 @@
   "name": "berlin-rental-watcher",
   "version": "3.0.0",
   "private": true,
-  "description": "Watcher mit Ergebnisliste, 30s Polling und E-Mail-Benachrichtigungen.",
+  "description": "Watcher mit Ergebnisliste, 30s Polling und E-Mail-Benachrichtigungen. Provider: Vonovia, Gewobag, DEGEWO, Deutsche Wohnen, STADT UND LAND, Berlinovo.",
   "main": "server.js",
   "type": "module",
   "scripts": {
     "start": "node server.js"
   },
-  "engines": {
-    "node": ">=18 <23"
-  },
+  "engines": { "node": ">=18 <23" },
   "dependencies": {
     "cheerio": "^1.0.0",
+    "cors": "^2.8.5",
     "express": "^4.19.2",
     "node-fetch": "^3.3.2",
-    "nodemailer": "^6.9.13",
-    "cors": "^2.8.5"
+    "nodemailer": "^6.9.13"
   }
 }
