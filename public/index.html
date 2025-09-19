@@ -29,10 +29,7 @@
       <div><label>Zimmer max</label><input id="zimMax" type="number" step="0.5"></div>
       <div><label>Fläche min (m²)</label><input id="flMin" type="number"></div>
       <div><label>Preis max (€)</label><input id="prMax" type="number"></div>
-      <div>
-        <label>Bezirke</label>
-        <select id="bezirke" multiple size="6"></select>
-      </div>
+      <div><label>Bezirke</label><select id="bezirke" multiple size="6"></select></div>
     </div>
     <div>
       <label>Provider</label>
@@ -70,8 +67,8 @@ function renderRows(rows){
       <td>${r.rooms||''}</td>
       <td>${r.size||''}</td>
       <td><a href="${r.url}" target="_blank" rel="noopener">öffnen</a></td>
-    </tr>`).join('')
-    +'</table>';
+    </tr>`).join('') +
+  '</table>';
 }
 async function refresh(){
   const res = await fetch('/api/searches'); const data = await res.json();
@@ -107,7 +104,10 @@ document.getElementById('create').onclick = async ()=>{
     bezirke: Array.from(document.getElementById('bezirke').selectedOptions).map(o=>o.value)
   };
   const provData = await (await fetch('/api/providers')).json();
-  const providers = provData.map(p => document.getElementById('prov_'+p.id)).filter(cb => cb && cb.checked).map(cb => cb.id.replace('prov_',''));
+  const providers = provData
+    .map(p => document.getElementById('prov_'+p.id))
+    .filter(cb => cb && cb.checked)
+    .map(cb => cb.id.replace('prov_',''));
   const res = await fetch('/api/searches',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ email, criteria, providers })});
   if(res.ok){ alert('Suche angelegt. Polling läuft alle 30s.'); refresh(); } else { alert('Fehler: '+(await res.text())); }
 };
