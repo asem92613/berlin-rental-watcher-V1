@@ -1,1 +1,117 @@
-<!doctype html><html><head><meta charset='utf-8'><title>Berlin Rental Watcher</title></head><body><h1>Berlin Rental Watcher</h1><p>Frontend hier ...</p></body></html>
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Berlin Rental Watcher</title>
+<style>
+  body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;margin:0;background:#0b1020;color:#e8eefc}
+  .wrap{max-width:1000px;margin:20px auto;padding:0 16px}
+  .card{background:#141a2f;border:1px solid #213055;border-radius:12px;padding:16px}
+  label{display:block;font-size:13px;opacity:.8;margin:.5rem 0 .25rem}
+  input,select,button{width:100%;padding:10px;border-radius:10px;border:1px solid #2a3a66;background:#0e1731;color:#e8eefc}
+  .row{display:flex;gap:10px;flex-wrap:wrap} .row>div{flex:1;min-width:220px}
+  .btn{background:linear-gradient(180deg,#2a7bff,#2b5cff);border:0;cursor:pointer}
+  table{width:100%;border-collapse:collapse;font-size:14px;margin-top:8px}
+  th,td{border-bottom:1px solid #25345e;padding:8px;text-align:left;vertical-align:top}
+  a{color:#b9d4ff}
+  .muted{opacity:.8}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Berlin Rental Watcher</h1>
+  <p class="muted">Serverseitiges Polling alle 30s. Ergebnisse werden unten tabellarisch angezeigt und optional per E-Mail versendet.</p>
+  <div class="card">
+    <div class="row">
+      <div><label>E-Mail für Benachrichtigung (optional)</label><input id="email" type="email"></div>
+      <div><label>Zimmer min</label><input id="zimMin" type="number" step="0.5"></div>
+      <div><label>Zimmer max</label><input id="zimMax" type="number" step="0.5"></div>
+      <div><label>Fläche min (m²)</label><input id="flMin" type="number"></div>
+      <div><label>Preis max (€)</label><input id="prMax" type="number"></div>
+      <div>
+        <label>Bezirke</label>
+        <select id="bezirke" multiple size="6"></select>
+      </div>
+    </div>
+    <div>
+      <label>Provider</label>
+      <div id="providers"></div>
+    </div>
+    <div style="margin-top:10px">
+      <button class="btn" id="create">Suche anlegen & starten</button>
+    </div>
+  </div>
+
+  <h2>Aktive Suchen</h2>
+  <div id="list"></div>
+</div>
+<script>
+const BERLIN_DISTRICTS = ['Mitte','Friedrichshain-Kreuzberg','Pankow','Charlottenburg-Wilmersdorf','Spandau','Steglitz-Zehlendorf','Tempelhof-Schöneberg','Neukölln','Treptow-Köpenick','Marzahn-Hellersdorf','Lichtenberg','Reinickendorf','Prenzlauer Berg','Wedding','Moabit','Schöneberg','Kreuzberg','Friedrichshain','Charlottenburg','Wilmersdorf','Tempelhof','Köpenick','Adlershof','Weißensee'];
+const selBez = document.getElementById('bezirke');
+BERLIN_DISTRICTS.forEach(d => { const o=document.createElement('option'); o.value=d; o.textContent=d; selBez.appendChild(o); });
+
+async function loadProviders(){
+  const res = await fetch('/api/providers'); const data = await res.json();
+  const div = document.getElementById('providers'); div.innerHTML='';
+  data.forEach(p => {
+    const id = 'prov_'+p.id;
+    div.insertAdjacentHTML('beforeend', '<label><input type="checkbox" id="'+id+'" checked> '+p.name+'</label>');
+  });
+}
+function renderRows(rows){
+  if(!rows.length) return '<p class="muted">Keine Ergebnisse.</p>';
+  return '<table><tr><th>Titel</th><th>Anbieter</th><th>Bezirk/Ort</th><th>Preis (€)</th><th>Zimmer</th><th>m²</th><th>Link</th></tr>'+
+    rows.map(r=>`<tr>
+      <td>${(r.title||'').replace(/</g,'&lt;')}</td>
+      <td>${r.provider||''}</td>
+      <td>${r.location||''}</td>
+      <td>${r.price||''}</td>
+      <td>${r.rooms||''}</td>
+      <td>${r.size||''}</td>
+      <td><a href="${r.url}" target="_blank" rel="noopener">öffnen</a></td>
+    </tr>`).join('')
+    +'</table>';
+}
+async function refresh(){
+  const res = await fetch('/api/searches'); const data = await res.json();
+  const list=document.getElementById('list'); list.innerHTML='';
+  data.forEach(s=>{
+    const boxId='results_'+s.id;
+    list.insertAdjacentHTML('beforeend',`
+      <div class="card" style="margin-top:10px">
+        <div><b>ID:</b> ${s.id} – <b>E-Mail:</b> ${s.email||'—'} – <b>aktiv:</b> ${s.active}</div>
+        <div><b>Provider:</b> ${s.providers.join(', ')}</div>
+        <div style="margin-top:8px" class="row">
+          <div><button onclick="toggle('${s.id}')" class="btn">An/Aus</button></div>
+          <div><button onclick="runNow('${s.id}','${boxId}')" class="btn">Jetzt abfragen</button></div>
+          <div><a target="_blank" href="/api/searches/${s.id}/results">JSON</a></div>
+        </div>
+        <div id="${boxId}"></div>
+      </div>
+    `);
+  });
+}
+async function toggle(id){ await fetch('/api/searches/'+id+'/toggle',{method:'POST'}); refresh(); }
+async function runNow(id, boxId){
+  const res = await fetch('/api/searches/'+id+'/results'); const data = await res.json();
+  document.getElementById(boxId).innerHTML = renderRows(data.all);
+}
+document.getElementById('create').onclick = async ()=>{
+  const email = document.getElementById('email').value.trim();
+  const criteria = {
+    zimmerMin: document.getElementById('zimMin').value,
+    zimmerMax: document.getElementById('zimMax').value,
+    flaecheMin: document.getElementById('flMin').value,
+    preisMax: document.getElementById('prMax').value,
+    bezirke: Array.from(document.getElementById('bezirke').selectedOptions).map(o=>o.value)
+  };
+  const provData = await (await fetch('/api/providers')).json();
+  const providers = provData.map(p => document.getElementById('prov_'+p.id)).filter(cb => cb && cb.checked).map(cb => cb.id.replace('prov_',''));
+  const res = await fetch('/api/searches',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ email, criteria, providers })});
+  if(res.ok){ alert('Suche angelegt. Polling läuft alle 30s.'); refresh(); } else { alert('Fehler: '+(await res.text())); }
+};
+loadProviders(); refresh();
+</script>
+</body>
+</html>
