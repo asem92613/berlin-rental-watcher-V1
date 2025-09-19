@@ -10,14 +10,12 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// .env lokal laden (auf Render Werte im Dashboard setzen)
+// .env lokal lesen; auf Render trägst du die Variablen im Dashboard ein
 const envPath = path.join(__dirname, ".env");
 if (fs.existsSync(envPath)) {
   for (const line of fs.readFileSync(envPath, "utf8").split(/\r?\n/)) {
     if (!line || !line.includes("=")) continue;
-    const i = line.indexOf("=");
-    const k = line.slice(0, i);
-    const v = line.slice(i + 1);
+    const i = line.indexOf("="); const k = line.slice(0, i); const v = line.slice(i + 1);
     if (!(k in process.env)) process.env[k] = v;
   }
 }
@@ -25,7 +23,7 @@ if (fs.existsSync(envPath)) {
 const PORT = Number(process.env.PORT || 3000);
 const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
 
-// Mini-DB
+// einfache Persistenz
 const dataFile = path.join(__dirname, "data.json");
 let DB = { searches: [], seen: {} };
 try { DB = JSON.parse(fs.readFileSync(dataFile, "utf8")); } catch {}
@@ -42,7 +40,7 @@ if (process.env.SMTP_HOST) {
   });
 }
 
-// ===== Utils =====
+// Utils
 async function fetchHTML(url){
   const res = await fetch(url, {
     redirect: "follow",
@@ -54,7 +52,7 @@ async function fetchHTML(url){
   });
   if (!res.ok) {
     console.error("fetchHTML non-200", res.status, url);
-    return null; // nicht hart abbrechen
+    return null;
   }
   return await res.text();
 }
@@ -78,130 +76,182 @@ const matchesDistrict = (text, wanted) => {
   const hay = (text||"").toLowerCase();
   return wanted.some(b => hay.includes(b.toLowerCase()));
 };
+const encode = (v) => encodeURIComponent(v);
 
-// Kandidaten-Parser mit Fallback-Link
+// Kriterien → Text
+const roomsClause = (q) => {
+  const min = q?.zimmerMin ? Number(q.zimmerMin) : null;
+  const max = q?.zimmerMax ? Number(q.zimmerMax) : null;
+  if(min && max) return `${min}-${max}`;
+  if(min) return `${min}-`;
+  if(max) return `-${max}`;
+  return "";
+};
+const districtsClause = (q) => (Array.isArray(q?.bezirke) ? q.bezirke : []).filter(Boolean);
+
+// HTML-Seite in strukturierte Items parsen und streng filtern
+async function parseListingPage(name, url, hrefRegex, q){
+  const html = await fetchHTML(url);
+  if(!html) return [];
+  const $ = cheerio.load(html);
+  const items = [];
+  const CARD_SEL = [
+    "article",".card",".listing",".listing-item",".c-results__item",
+    ".offer",".result",".result-item",".tile",".object",
+    ".search-result",".search__result","li"
+  ];
+  $(CARD_SEL.join(",")).each((_, el)=>{
+    const card = $(el);
+    const a = card.find("a[href]").first();
+    if(!a.length) return;
+    const href = a.attr("href")||"";
+    if(!hrefRegex.test(href)) return;
+    const link = abs(url, href); if(!link) return;
+    const text = pick(card);
+    const { price, rooms, size } = parseNums(text);
+    const title = pick(a) || "Angebot";
+    const location = (text.match(/Berlin[^|,\n]*/)||[])[0] || "Berlin";
+    items.push({ id: link, url: link, title, provider: name, price, rooms, size, location });
+  });
+
+  const bez = districtsClause(q);
+  const wantBez = bez.length > 0;
+  return items.filter(it=>{
+    if(q?.zimmerMin && it.rooms && it.rooms < Number(q.zimmerMin)) return false;
+    if(q?.zimmerMax && it.rooms && it.rooms > Number(q.zimmerMax)) return false;
+    if(q?.flaecheMin && it.size && it.size < Number(q.flaecheMin)) return false;
+    if(q?.preisMax  && it.price && it.price > Number(q.preisMax))   return false;
+    if(wantBez){
+      const hay = `${it.location||""} ${it.title||""}`.toLowerCase();
+      const ok = bez.some(b=>hay.includes(b.toLowerCase()));
+      if(!ok) return false;
+    }
+    return true;
+  });
+}
+
+// mehrere Kandidat-URLs testen; wenn keine greift, Firmen-Suchlink zurückgeben
 async function tryCandidates(name, candidates, hrefRegex, q, fallbackLink){
   for (const url of candidates) {
-    const html = await fetchHTML(url);
-    if (!html) continue;
-    const $ = cheerio.load(html);
-    const items = [];
-    const CARD_SEL = [
-      "article",".teaser",".card",".listing",".listing-item",".c-results__item",
-      ".result","li",".tile",".object",".item",".search-result",".search__result",".result-item"
-    ];
-    $(CARD_SEL.join(",")).each((_, el)=>{
-      const card = $(el);
-      const a = card.find("a[href]").first();
-      const href = a.attr("href")||"";
-      if(!hrefRegex.test(href)) return;
-      const link = abs(url, href); if(!link) return;
-      const text = pick(card);
-      const { price, rooms, size } = parseNums(text);
-      const title = pick(a) || "Angebot";
-      const location = (text.match(/Berlin[^|,\n]*/)||[])[0] || "Berlin";
-      if (matchesDistrict(`${text} ${title} ${location}`, q?.bezirke)) {
-        items.push({ id: link, url: link, title, provider: name, price, rooms, size, location });
-      }
-    });
+    const items = await parseListingPage(name, url, hrefRegex, q);
     if (items.length) return items;
   }
   return fallbackLink ? [{
     id: fallbackLink, url: fallbackLink,
     title: `Zur Suche bei ${name} öffnen`,
     provider: name, price: null, rooms: null, size: null,
-    location: (q?.bezirke && q.bezirke.length) ? q.bezirke.join(", ") : "Berlin"
+    location: (q?.bezirke?.length ? q.bezirke.join(", ") : "Berlin")
   }] : [];
 }
 
-// ===== Provider (6 Gesellschaften + Google-Fallback) =====
+// Such-URL-Builder je Anbieter
+function buildVonoviaURL(q){
+  const p = [];
+  p.push(`city=${encode("Berlin")}`);
+  if(q?.zimmerMin) p.push(`roomsFrom=${encode(q.zimmerMin)}`);
+  if(q?.zimmerMax) p.push(`roomsTo=${encode(q.zimmerMax)}`);
+  if(q?.preisMax)  p.push(`rentTo=${encode(q.preisMax)}`);
+  if(q?.flaecheMin)p.push(`areaFrom=${encode(q.flaecheMin)}`);
+  return `https://www.vonovia.de/immobiliensuche?${p.join("&")}`;
+}
+function buildGewobagURL(q){
+  const p = [];
+  p.push(`ort=${encode("Berlin")}`);
+  if(q?.preisMax)  p.push(`miete_bis=${encode(q.preisMax)}`);
+  if(q?.flaecheMin)p.push(`flaeche_ab=${encode(q.flaecheMin)}`);
+  if(q?.zimmerMin) p.push(`zimmer_ab=${encode(q.zimmerMin)}`);
+  if(q?.zimmerMax) p.push(`zimmer_bis=${encode(q.zimmerMax)}`);
+  return `https://www.gewobag.de/wohnungen/angebote/?${p.join("&")}`;
+}
+function buildDegewoURL(q){
+  const p = [];
+  p.push(`ort=${encode("Berlin")}`);
+  if(q?.zimmerMin) p.push(`zimmer_von=${encode(q.zimmerMin)}`);
+  if(q?.zimmerMax) p.push(`zimmer_bis=${encode(q.zimmerMax)}`);
+  if(q?.preisMax)  p.push(`miete_bis=${encode(q.preisMax)}`);
+  if(q?.flaecheMin)p.push(`flaeche_ab=${encode(q.flaecheMin)}`);
+  return `https://www.degewo.de/wohnungen/wohnungssuche/?${p.join("&")}`;
+}
+function buildDeutscheWohnenURL(q){
+  const p = [];
+  p.push(`ort=${encode("Berlin")}`);
+  if(q?.zimmerMin) p.push(`zimmer_von=${encode(q.zimmerMin)}`);
+  if(q?.zimmerMax) p.push(`zimmer_bis=${encode(q.zimmerMax)}`);
+  if(q?.preisMax)  p.push(`miete_bis=${encode(q.preisMax)}`);
+  if(q?.flaecheMin)p.push(`flaeche_ab=${encode(q.flaecheMin)}`);
+  return `https://www.deutsche-wohnen.com/mieten/wohnungsangebote/?${p.join("&")}`;
+}
+function buildStadtUndLandURL(q){
+  const p = [];
+  p.push(`stadt=${encode("Berlin")}`);
+  if(q?.zimmerMin) p.push(`zimmer_ab=${encode(q.zimmerMin)}`);
+  if(q?.zimmerMax) p.push(`zimmer_bis=${encode(q.zimmerMax)}`);
+  if(q?.preisMax)  p.push(`miete_bis=${encode(q.preisMax)}`);
+  if(q?.flaecheMin)p.push(`flaeche_ab=${encode(q.flaecheMin)}`);
+  return `https://www.stadtundland.de/mietangebote?${p.join("&")}`;
+}
+function buildBerlinovoURL(q){
+  const p = [];
+  p.push(`search=${encode("Berlin")}`);
+  const rc = roomsClause(q);
+  if(rc)           p.push(`rooms=${encode(rc)}`);
+  if(q?.preisMax)  p.push(`rentTo=${encode(q.preisMax)}`);
+  if(q?.flaecheMin)p.push(`spaceFrom=${encode(q.flaecheMin)}`);
+  return `https://www.berlinovo.de/de/wohnraum?${p.join("&")}`;
+}
+
+// Provider-Funktionen
 async function providerVonovia(q){
-  return tryCandidates(
-    "Vonovia",
-    [
-      "https://www.vonovia.de/immobiliensuche",
-      "https://www.vonovia.de/de-de/mieten/immobiliensuche"
-    ],
-    /immobil|wohnung|miete/i,
-    q,
-    "https://www.vonovia.de/immobiliensuche?city=Berlin"
-  );
+  const url = buildVonoviaURL(q);
+  return tryCandidates("Vonovia",
+    [url, "https://www.vonovia.de/de-de/mieten/immobiliensuche"],
+    /immobil|wohnung|miete|expose/i, q,
+    url);
 }
 async function providerGewobag(q){
-  return tryCandidates(
-    "Gewobag",
-    [
-      "https://www.gewobag.de/wohnungen/angebote/",
-      "https://www.gewobag.de/ Wohnungen/".replace(" ","") // zweite mögliche Route
-    ],
-    /angebot|wohnung|miete/i,
-    q,
-    "https://www.gewobag.de/wohnungen/angebote/?ort=Berlin"
-  );
+  const url = buildGewobagURL(q);
+  return tryCandidates("Gewobag",
+    [url, "https://www.gewobag.de/wohnungen/"],
+    /angebot|wohnung|miete|expose/i, q,
+    url);
 }
 async function providerDegewo(q){
-  return tryCandidates(
-    "DEGEWO",
-    [
-      "https://www.degewo.de/wohnungen/wohnungsangebote/",
-      "https://www.degewo.de/wohnungen/wohnungssuche/"
-    ],
-    /angebot|wohnung|miete/i,
-    q,
-    "https://www.degewo.de/wohnungen/wohnungssuche/?ort=Berlin"
-  );
+  const url = buildDegewoURL(q);
+  return tryCandidates("DEGEWO",
+    [url, "https://www.degewo.de/wohnungen/wohnungsangebote/"],
+    /angebot|wohnung|miete|expose/i, q,
+    url);
 }
 async function providerDeutscheWohnen(q){
-  return tryCandidates(
-    "Deutsche Wohnen",
-    [
-      "https://www.deutsche-wohnen.com/mieten/wohnungsangebote/",
-      "https://www.deutsche-wohnen.com/mieten/"
-    ],
-    /angebot|wohnung|miete|expose/i,
-    q,
-    "https://www.deutsche-wohnen.com/mieten/"
-  );
+  const url = buildDeutscheWohnenURL(q);
+  return tryCandidates("Deutsche Wohnen",
+    [url, "https://www.deutsche-wohnen.com/mieten/"],
+    /angebot|wohnung|miete|expose/i, q,
+    url);
 }
 async function providerStadtUndLand(q){
-  return tryCandidates(
-    "STADT UND LAND",
-    [
-      "https://www.stadtundland.de/wohnungen/wohnungsangebote",
-      "https://www.stadtundland.de/mietangebote"
-    ],
-    /wohnung|angebot|miete/i,
-    q,
-    "https://www.stadtundland.de/mietangebote"
-  );
+  const url = buildStadtUndLandURL(q);
+  return tryCandidates("STADT UND LAND",
+    [url, "https://www.stadtundland.de/wohnungen/wohnungsangebote"],
+    /wohnung|angebot|miete|expose/i, q,
+    url);
 }
 async function providerBerlinovo(q){
-  return tryCandidates(
-    "Berlinovo",
-    [
-      "https://www.berlinovo.de/de/wohnraum",
-      "https://www.berlinovo.de/de/wohnraum/mieten"
-    ],
-    /wohn|apartment|miete|angebot/i,
-    q,
-    "https://www.berlinovo.de/de/wohnraum"
-  );
+  const url = buildBerlinovoURL(q);
+  return tryCandidates("Berlinovo",
+    [url, "https://www.berlinovo.de/de/wohnraum/mieten"],
+    /wohn|apartment|miete|angebot|expose/i, q,
+    url);
 }
 async function providerGoogleFallback(q){
   const sites = [
     "site:vonovia.de","site:gewobag.de","site:degewo.de",
     "site:deutsche-wohnen.com","site:stadtundland.de","site:berlinovo.de"
   ];
-  const terms = ["Berlin"].concat(q?.bezirke || []).concat(sites).join(" ");
-  const url = "https://www.google.com/search?q=" + encodeURIComponent(terms);
-  const loc = (q?.bezirke && q.bezirke.length) ? q.bezirke.join(", ") : "Berlin";
-  return [{
-    id: url, url,
-    title: "Sammelsuche in allen Gesellschaften (Google)",
-    provider: "Google",
-    price: null, rooms: null, size: null,
-    location: loc
-  }];
+  const parts = ["Berlin"].concat(q?.bezirke||[]).concat(sites);
+  const url = "https://www.google.com/search?q=" + encode(parts.join(" "));
+  const loc = (q?.bezirke?.length ? q.bezirke.join(", ") : "Berlin");
+  return [{ id:url, url, title:"Sammelsuche (Google)", provider:"Google", price:null, rooms:null, size:null, location:loc }];
 }
 
 const PROVIDERS = {
@@ -214,11 +264,10 @@ const PROVIDERS = {
   google:       { name: "Google Fallback", fn: providerGoogleFallback, enabled: true }
 };
 
-// ===== Suche + Filter =====
+// Suche und Filter
 function newSearch(input){
   const id = String(Date.now()) + Math.random().toString(36).slice(2,8);
-  const all = Object.keys(PROVIDERS);
-  const chosen = input.providers && input.providers.length ? input.providers : all;
+  const chosen = input.providers && input.providers.length ? input.providers : Object.keys(PROVIDERS);
   const s = { id, email: input.email || "", criteria: input.criteria || {}, providers: chosen, active: true, createdAt: Date.now() };
   DB.searches.push(s); persist(); return s;
 }
@@ -267,7 +316,7 @@ async function sendEmail(to, items){
   await transporter.sendMail({ from: process.env.FROM_EMAIL || "wohnung-bot@example.com", to, subject: `Neue Wohnungsangebote (${items.length})`, text, html });
 }
 
-// ===== Server + API =====
+// Server + API
 const app = express();
 app.use(cors());
 app.use(express.json());
